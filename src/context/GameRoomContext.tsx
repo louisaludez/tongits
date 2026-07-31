@@ -186,7 +186,7 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
           setPlayerNames(prev => ({ ...prev, ...newNames }));
           setPlayerAvatars(prev => ({ ...prev, ...newAvatars }));
         })
-        .on('broadcast', { event: 'chat_message' }, (payload) => {
+        .on('broadcast', { event: 'chat_message' }, (payload: any) => {
           setChatMessages((prev) => [...prev, payload.payload as ChatMessage]);
           if (payload.payload.senderId !== userId) {
             import('../lib/sound').then(({ playSound }) => playSound.click()); // Quick blip for incoming chat
