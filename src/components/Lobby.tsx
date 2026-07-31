@@ -109,7 +109,7 @@ export const Lobby = () => {
 
       {/* Top Bar */}
       <div className="lobby-topbar">
-        <div className="lobby-logo">TONGITS GO</div>
+        <div className="lobby-logo">Tongsahur Goes</div>
         <div className="lobby-user-panel" onClick={() => { playSound.click(); setShowProfile(true); }} style={{ cursor: 'pointer' }}>
           <div className="lobby-avatar">
             <img src={avatarImage} alt="avatar" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
