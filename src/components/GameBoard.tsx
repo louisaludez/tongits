@@ -12,11 +12,17 @@ export const GameBoard = () => {
   const [finalScores, setFinalScores] = useState<any[] | null>(null);
   const [showDiscardsModal, setShowDiscardsModal] = useState(false);
   const [chatInput, setChatInput] = useState('');
+  const [chatOpen, setChatOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll chat
+  // Auto-scroll chat & track unread
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatOpen) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    } else if (chatMessages.length > 0) {
+      setUnreadCount(prev => prev + 1);
+    }
   }, [chatMessages]);
 
   const isMyTurn = room?.current_turn_player_id === myPlayerId;
@@ -72,7 +78,12 @@ export const GameBoard = () => {
   }, [room?.status, players]);
 
   if (!room) return null;
-  const opponents = players.filter(p => p.id !== myPlayerId);
+  
+  const ghostPlayerIds = (room.board_melds || [])
+    .filter(m => m.type === 'ghost')
+    .map(m => m.playerId);
+    
+  const opponents = players.filter(p => p.id !== myPlayerId && !ghostPlayerIds.includes(p.id));
 
   const { melds, unmatched } = useMemo(() => extractMelds(hand), [hand]);
 
@@ -153,28 +164,39 @@ export const GameBoard = () => {
   return (
     <div className="game-board">
       
-      {/* Room Badge */}
-      <div className="room-id-badge">
-        POT: {room.code}
+      {/* Top Center Controls (POT and Leave) */}
+      <div style={{ position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', zIndex: 100 }}>
+        <div className="room-id-badge" style={{ position: 'relative', top: 0, left: 0, transform: 'none' }}>
+          POT: {room.code}
+        </div>
+        <button 
+          className="mobile-btn btn-red" 
+          style={{ padding: '4px 12px', fontSize: '0.75rem', borderRadius: '15px' }}
+          onClick={leaveRoom}
+        >
+          Leave Match
+        </button>
       </div>
 
       {/* Opponents Layer */}
       <div className="opponents-layer">
         {opponents.map((op, index) => {
           const isOp1 = index === 0;
+          const isDisconnected = room.board_melds?.some(m => m.type === 'player_disconnected' && m.playerId === op.id);
           return (
             <div 
               key={op.id} 
               style={{ 
                 position: 'absolute', top: 20, [isOp1 ? 'left' : 'right']: 20, 
                 pointerEvents: 'auto', display: 'flex', flexDirection: 'column', 
-                alignItems: isOp1 ? 'flex-start' : 'flex-end' 
+                alignItems: isOp1 ? 'flex-start' : 'flex-end',
+                opacity: isDisconnected ? 0.6 : 1
               }}
             >
-              <div className={`opponent-box ${room.current_turn_player_id === op.id ? 'active-turn' : ''}`} style={{ position: 'relative', background: 'transparent', border: 'none', flexDirection: 'row', gap: '15px' }}>
+              <div className={`opponent-box ${room.current_turn_player_id === op.id && !isDisconnected ? 'active-turn' : ''}`} style={{ position: 'relative', background: 'transparent', border: 'none', flexDirection: 'row', gap: '15px' }}>
                 {isOp1 && (
                   <div style={{ position: 'relative' }}>
-                    <div className="avatar">
+                    <div className="avatar" style={{ filter: isDisconnected ? 'grayscale(100%)' : 'none' }}>
                       <img src={playerAvatars[op.user_id] || `https://api.dicebear.com/7.x/avataaars/svg?seed=${op.id}`} alt="avatar" style={{width:'100%', height:'100%', objectFit: 'cover'}} />
                     </div>
                     <div className="card-badge" style={{ right: -10 }}>{op.card_count}</div>
@@ -182,13 +204,15 @@ export const GameBoard = () => {
                 )}
                 
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: isOp1 ? 'flex-start' : 'flex-end', justifyContent: 'center' }}>
-                  <div className="op-name">{playerNames[op.user_id] || `Player ${op.position}`}</div>
+                  <div className="op-name" style={{ color: isDisconnected ? '#9ca3af' : 'white' }}>
+                    {isDisconnected ? 'Disconnected' : (playerNames[op.user_id] || `Player ${op.position}`)}
+                  </div>
                   <div className="op-coins">🪙 100,000</div>
                 </div>
 
                 {!isOp1 && (
                   <div style={{ position: 'relative' }}>
-                    <div className="avatar">
+                    <div className="avatar" style={{ filter: isDisconnected ? 'grayscale(100%)' : 'none' }}>
                       <img src={playerAvatars[op.user_id] || `https://api.dicebear.com/7.x/avataaars/svg?seed=${op.id}`} alt="avatar" style={{width:'100%', height:'100%', objectFit: 'cover'}} />
                     </div>
                     <div className="card-badge" style={{ left: -10 }}>{op.card_count}</div>
@@ -319,6 +343,27 @@ export const GameBoard = () => {
               )}
             </>
           )}
+
+          {room.status === 'finished' && (
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <div style={{ color: 'white', fontWeight: 'bold', fontSize: '1.2rem', padding: '10px 20px', background: 'rgba(0,0,0,0.5)', borderRadius: '20px' }}>
+                Game Over!
+              </div>
+              <button 
+                className="mobile-btn btn-blue" 
+                onClick={() => restartGame(myPlayerId!)}
+                disabled={players.length < 2}
+              >
+                {players.length < 2 ? 'Need more players to restart' : 'Play Again'}
+              </button>
+              <button 
+                className="mobile-btn btn-red" 
+                onClick={leaveRoom}
+              >
+                Leave Room
+              </button>
+            </div>
+          )}
         </div>
 
         {/* My Dropped Melds */}
@@ -377,7 +422,7 @@ export const GameBoard = () => {
       </div>
 
       {/* Fight Modal */}
-      {isFightActive && room.status !== 'finished' && (
+      {isFightActive && room.status === 'playing' && (
         <div style={{
           position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', 
           background: 'rgba(0,0,0,0.85)', display: 'flex', flexDirection: 'column', 
@@ -489,31 +534,38 @@ export const GameBoard = () => {
         </div>
       )}
 
-      {/* Chat Box */}
-      <div className="chat-box-container">
-        <div className="chat-messages">
-          {chatMessages.map((msg) => (
-            <div key={msg.id} className="chat-message">
-              <span className="chat-sender">{msg.senderName}:</span>
-              <span className="chat-text">{msg.text}</span>
-            </div>
-          ))}
-          <div ref={chatEndRef} />
+      {/* Chat Box - Collapsible */}
+      <div className={`chat-box-container ${chatOpen ? 'chat-open' : 'chat-closed'}`}>
+        <div className="chat-toggle" onClick={() => { setChatOpen(!chatOpen); if (!chatOpen) setUnreadCount(0); }}>
+          {chatOpen ? '▼ Chat' : `💬 Chat${unreadCount > 0 ? ` (${unreadCount})` : ''}`}
         </div>
-        <form className="chat-input-area" onSubmit={(e) => {
-          e.preventDefault();
-          sendChatMessage(chatInput);
-          setChatInput('');
-        }}>
-          <input 
-            type="text" 
-            value={chatInput} 
-            onChange={(e) => setChatInput(e.target.value)} 
-            placeholder="Type a message..." 
-            maxLength={100}
-          />
-          <button type="submit" disabled={!chatInput.trim()}>Send</button>
-        </form>
+        {chatOpen && (
+          <>
+            <div className="chat-messages">
+              {chatMessages.map((msg) => (
+                <div key={msg.id} className="chat-message">
+                  <span className="chat-sender">{msg.senderName}:</span>
+                  <span className="chat-text">{msg.text}</span>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+            <form className="chat-input-area" onSubmit={(e) => {
+              e.preventDefault();
+              sendChatMessage(chatInput);
+              setChatInput('');
+            }}>
+              <input 
+                type="text" 
+                value={chatInput} 
+                onChange={(e) => setChatInput(e.target.value)} 
+                placeholder="Type a message..." 
+                maxLength={100}
+              />
+              <button type="submit" disabled={!chatInput.trim()}>Send</button>
+            </form>
+          </>
+        )}
       </div>
 
     </div>

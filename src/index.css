@@ -456,7 +456,6 @@ body {
   bottom: 20px;
   left: 20px;
   width: 300px;
-  height: 250px;
   background: rgba(15, 23, 42, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
@@ -467,6 +466,32 @@ body {
   backdrop-filter: blur(5px);
   z-index: 100;
   pointer-events: auto;
+  transition: height 0.3s ease;
+}
+
+.chat-box-container.chat-open {
+  height: 250px;
+}
+
+.chat-box-container.chat-closed {
+  height: auto;
+}
+
+.chat-toggle {
+  padding: 8px 14px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #e2e8f0;
+  font-weight: bold;
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+  letter-spacing: 0.5px;
+  transition: background 0.2s;
+}
+
+.chat-toggle:hover {
+  background: rgba(0, 0, 0, 0.6);
 }
 
 .chat-messages {

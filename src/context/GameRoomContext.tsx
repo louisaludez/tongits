@@ -10,7 +10,7 @@ export type TurnPhase = 'draw' | 'action';
 export interface RoomMeld {
   playerId: string;
   cards?: Card[];
-  type?: 'meld' | 'fight_caller' | 'fight_response';
+  type?: 'meld' | 'fight_caller' | 'fight_response' | 'player_disconnected' | 'ghost';
   isFold?: boolean;
 }
 
@@ -128,6 +128,57 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
     };
   }, []);
 
+  // Reconnect logic on refresh
+  useEffect(() => {
+    if (!userId || room) return;
+    
+    const tryReconnect = async () => {
+      // Find if player is in a room (just check recent ones)
+      const { data: player } = await supabase
+        .from('players')
+        .select('*')
+        .eq('user_id', userId)
+        .order('id', { ascending: false })
+        .limit(1)
+        .single();
+        
+      if (player) {
+        // Check if room is still active
+        const { data: existingRoom } = await supabase
+          .from('rooms')
+          .select('*')
+          .eq('id', player.room_id)
+          .single();
+          
+        if (existingRoom && existingRoom.status !== 'finished') {
+          const isDisconnected = existingRoom.board_melds?.some((m: any) => 
+            (m.type === 'player_disconnected' || m.type === 'ghost') && m.playerId === player.id
+          );
+          if (!isDisconnected) {
+            setMyPlayerId(player.id);
+            setRoom(existingRoom as Room);
+          } else {
+            // I was disconnected — clean up my own records so I'm fully removed from the room
+            await supabase.from('player_hands').delete().eq('player_id', player.id);
+            await supabase.from('players').delete().eq('id', player.id);
+            
+            // Remove my disconnected/ghost flag from board_melds
+            const cleanMelds = (existingRoom.board_melds || []).filter((m: any) => m.playerId !== player.id);
+            await supabase.from('rooms').update({ board_melds: cleanMelds }).eq('id', existingRoom.id);
+            
+            // Check if room is now empty
+            const { count } = await supabase.from('players').select('*', { count: 'exact', head: true }).eq('room_id', existingRoom.id);
+            if (count === 0) {
+              await supabase.from('rooms').delete().eq('id', existingRoom.id);
+            }
+          }
+        }
+      }
+    };
+    
+    tryReconnect();
+  }, [userId]);
+
   // Listen to room changes
   useEffect(() => {
     if (!room?.id) return;
@@ -222,15 +273,137 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
     return () => clearInterval(interval);
   }, [room?.id]);
 
-  // Auto-start game when room is full (3 players)
+  // Bot Auto-Play Logic
   useEffect(() => {
-    if (room?.status === 'waiting' && players.length === 3) {
-      const me = players.find(p => p.id === myPlayerId);
-      if (me?.position === 1) {
-        startGame();
+    if (!room || !myPlayerId || !players.length) return;
+    
+    const disconnectedPlayerIds = (room.board_melds || [])
+      .filter(m => m.type === 'player_disconnected')
+      .map(m => m.playerId);
+      
+    if (!disconnectedPlayerIds.includes(room.current_turn_player_id || '')) return;
+    
+    // Determine Host (active player with lowest position)
+    const activePlayers = players.filter(p => !disconnectedPlayerIds.includes(p.id)).sort((a, b) => a.position - b.position);
+    if (activePlayers.length === 0) return;
+    if (activePlayers[0].id !== myPlayerId) return; // Only Host runs the bot
+    
+    const autoPlayBot = async () => {
+      const botId = room.current_turn_player_id!;
+      const botPlayer = players.find(p => p.id === botId);
+      let nextPos = (botPlayer?.position || 1) + 1;
+      if (nextPos > players.length) nextPos = 1;
+      const nextPlayer = players.find(p => p.position === nextPos);
+      
+      // Check if a fight is active — bot auto-folds
+      const isFightActive = (room.board_melds || []).some(m => m.type === 'fight_caller');
+      if (isFightActive) {
+        const newMelds: RoomMeld[] = [...room.board_melds, { type: 'fight_response', playerId: botId, isFold: true }];
+        const fightCallerEvent = room.board_melds.find(m => m.type === 'fight_caller');
+        
+        if (fightCallerEvent && nextPlayer?.id === fightCallerEvent.playerId) {
+          // Fight cycle is complete
+          await supabase.from('rooms').update({ 
+            status: 'finished',
+            board_melds: newMelds
+          }).eq('id', room.id);
+        } else {
+          // Pass to next player to respond
+          await supabase.from('rooms').update({ 
+            board_melds: newMelds,
+            current_turn_player_id: nextPlayer?.id
+          }).eq('id', room.id);
+        }
+        return;
+      }
+
+      if (room.turn_phase === 'draw') {
+        if (room.deck.length === 0) {
+          await supabase.from('rooms').update({ status: 'finished' }).eq('id', room.id);
+          return;
+        }
+        
+        // RLS prevents reading other players' hands. 
+        // So the bot will just instantly draw from the deck, throw that same card away, and pass the turn!
+        const newDeck = [...room.deck];
+        const drawnCard = newDeck.shift()!;
+        
+        await supabase.from('rooms').update({ 
+          deck: newDeck,
+          discard_pile: [...room.discard_pile, drawnCard],
+          turn_phase: 'draw',
+          current_turn_player_id: nextPlayer?.id
+        }).eq('id', room.id);
+        
+      } else if (room.turn_phase === 'action') {
+        // If they disconnected during their action phase, just pass the turn.
+        await supabase.from('rooms').update({ 
+          turn_phase: 'draw',
+          current_turn_player_id: nextPlayer?.id
+        }).eq('id', room.id);
+      }
+    };
+    
+    const timer = setTimeout(() => {
+      autoPlayBot();
+    }, 1500);
+    
+    return () => clearTimeout(timer);
+  }, [room?.current_turn_player_id, room?.turn_phase, myPlayerId, players]);
+
+  // Auto-start game when room is full (3 active players)
+  useEffect(() => {
+    if (room?.status === 'waiting') {
+      const disconnectedPlayerIds = (room.board_melds || [])
+        .filter(m => m.type === 'player_disconnected' || m.type === 'ghost')
+        .map(m => m.playerId);
+      
+      const activePlayers = players.filter(p => !disconnectedPlayerIds.includes(p.id));
+      
+      if (activePlayers.length === 3) {
+        const me = activePlayers.find(p => p.id === myPlayerId);
+        // Only the host (lowest position) starts it
+        const hostPos = Math.min(...activePlayers.map(p => p.position));
+        if (me?.position === hostPos) {
+          startGame();
+        }
       }
     }
-  }, [players, room?.status, myPlayerId]);
+  }, [players, room?.status, myPlayerId, room?.board_melds]);
+
+  // Clean up disconnected players when game finishes
+  useEffect(() => {
+    if (room?.status === 'finished' && myPlayerId && players.length > 0) {
+      const disconnectedPlayerIds = (room.board_melds || [])
+        .filter(m => m.type === 'player_disconnected' || m.type === 'ghost')
+        .map(m => m.playerId);
+        
+      if (disconnectedPlayerIds.length === 0) return;
+      
+      const activePlayers = players.filter(p => !disconnectedPlayerIds.includes(p.id)).sort((a, b) => a.position - b.position);
+      if (activePlayers.length > 0 && activePlayers[0].id === myPlayerId) {
+        // I am the host, I will sweep the disconnected players
+        const sweep = async () => {
+          // Attempt to delete (may fail due to RLS, which is fine)
+          for (const botId of disconnectedPlayerIds) {
+            await supabase.from('player_hands').delete().eq('player_id', botId);
+            await supabase.from('players').delete().eq('id', botId);
+          }
+          
+          // Keep only disconnected/ghost flags, clear ALL fight/meld data
+          const cleanMelds = (room.board_melds || [])
+            .filter(m => m.type === 'player_disconnected' || m.type === 'ghost');
+          
+          if (activePlayers.length < 3) {
+            await supabase.from('rooms').update({ status: 'waiting', board_melds: cleanMelds, discard_pile: [] }).eq('id', room.id);
+          } else {
+            await supabase.from('rooms').update({ board_melds: cleanMelds, discard_pile: [] }).eq('id', room.id);
+          }
+        };
+        sweep();
+      }
+    }
+  }, [room?.status, myPlayerId, players]);
 
   // Listen to hand changes
   useEffect(() => {
@@ -317,13 +490,19 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
     // Check if player is already in room
     const existingMe = existingPlayers?.find((p: any) => p.user_id === userId);
     
-    let pid = null;
+    let pid: string | null = null;
     if (existingMe) {
       pid = existingMe.id;
       setMyPlayerId(pid);
       
       const { data: handData } = await supabase.from('player_hands').select('hand').eq('player_id', pid).single();
       if (handData) setHand(handData.hand);
+      
+      const { data: currentRoom } = await supabase.from('rooms').select('board_melds').eq('id', roomId).single();
+      if (currentRoom) {
+        const newMelds = (currentRoom.board_melds || []).filter((m: any) => !(m.type === 'player_disconnected' && m.playerId === pid));
+        await supabase.from('rooms').update({ board_melds: newMelds }).eq('id', roomId);
+      }
     } else {
       const position = existingPlayers ? existingPlayers.length + 1 : 1;
       if (position > 3) {
@@ -361,14 +540,27 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const startGame = async () => {
-    if (!room || players.length < 2) return;
+    if (!room) return;
+    
+    // Fetch latest players to prevent race conditions (e.g. dealing to a swept bot)
+    const { data: latestPlayers } = await supabase.from('players').select('*').eq('room_id', room.id).order('position');
+    if (!latestPlayers) return;
+
+    // Strictly exclude anyone who was marked as disconnected or ghost
+    const disconnectedPlayerIds = (room.board_melds || [])
+      .filter(m => m.type === 'player_disconnected' || m.type === 'ghost')
+      .map(m => m.playerId);
+    
+    const activeLatestPlayers = latestPlayers.filter((p: any) => !disconnectedPlayerIds.includes(p.id));
+    if (activeLatestPlayers.length < 2) return;
     
     let deck = shuffleDeck(generateDeck());
     const roomUpdates = [];
     
-    // Deal 12 to players, 13 to dealer (pos 1)
-    for (const p of players) {
-      const numCards = p.position === 1 ? 13 : 12;
+    // Deal 12 to players, 13 to dealer (lowest active position)
+    const dealerPos = Math.min(...activeLatestPlayers.map((p: any) => p.position));
+    for (const p of activeLatestPlayers) {
+      const numCards = p.position === dealerPos ? 13 : 12;
       const playerHand = deck.splice(0, numCards);
       roomUpdates.push({
         player_id: p.id,
@@ -376,7 +568,7 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
       });
     }
 
-    const dealer = players.find(p => p.position === 1);
+    const dealer = activeLatestPlayers.find((p: any) => p.position === dealerPos);
     
     // Use an RPC function to bypass RLS so the dealer can give cards to opponents
     await supabase.rpc('deal_cards_to_room', {
@@ -387,17 +579,37 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
     });
 
     // The dealer starts with 13 cards, so they skip the draw phase!
-    await supabase.from('rooms').update({ turn_phase: 'action' }).eq('id', room.id);
+    // Also clear old fight/meld data but preserve disconnected/ghost flags
+    const preservedMelds = (room.board_melds || [])
+      .filter(m => m.type === 'player_disconnected' || m.type === 'ghost');
+    
+    await supabase.from('rooms').update({ 
+      turn_phase: 'action',
+      board_melds: preservedMelds,
+      discard_pile: []
+    }).eq('id', room.id);
   };
 
   const restartGame = async (winnerId: string) => {
-    if (!room || players.length < 2) return;
+    if (!room) return;
+    
+    // Fetch latest players to prevent race conditions
+    const { data: latestPlayers } = await supabase.from('players').select('*').eq('room_id', room.id).order('position');
+    if (!latestPlayers) return;
+
+    // Strictly exclude anyone who was marked as disconnected or ghost
+    const disconnectedPlayerIds = (room.board_melds || [])
+      .filter(m => m.type === 'player_disconnected' || m.type === 'ghost')
+      .map(m => m.playerId);
+    
+    const activeLatestPlayers = latestPlayers.filter((p: any) => !disconnectedPlayerIds.includes(p.id));
+    if (activeLatestPlayers.length < 2) return;
     
     let deck = shuffleDeck(generateDeck());
     const roomUpdates = [];
     
     // Deal 13 to winner, 12 to others
-    for (const p of players) {
+    for (const p of activeLatestPlayers) {
       const numCards = p.id === winnerId ? 13 : 12;
       const playerHand = deck.splice(0, numCards);
       roomUpdates.push({
@@ -413,11 +625,17 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
       dealer_id: winnerId
     });
 
+    // Convert disconnected players to 'ghost' so they vanish in the new game
+    const disconnectedMelds = (room.board_melds || [])
+      .filter(m => m.type === 'player_disconnected' || m.type === 'ghost')
+      .map(m => ({ type: 'ghost', playerId: m.playerId }));
+
     await supabase.from('rooms').update({ 
       status: 'playing',
-      board_melds: [],
+      board_melds: disconnectedMelds,
       discard_pile: [],
-      turn_phase: 'action' 
+      turn_phase: 'action',
+      current_turn_player_id: winnerId
     }).eq('id', room.id);
   };
 
@@ -504,6 +722,12 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
     const score = calculateHandScore(unmatched);
     
     if (newHand.length === 0 || score === 0) {
+      await supabase.from('rooms').update({ discard_pile: newDiscard, status: 'finished' }).eq('id', room.id);
+      return;
+    }
+
+    // Check if deck is exhausted. If so, game ends immediately after this discard!
+    if (room.deck.length === 0) {
       await supabase.from('rooms').update({ discard_pile: newDiscard, status: 'finished' }).eq('id', room.id);
       return;
     }
@@ -629,18 +853,22 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
     if (!room || !myPlayerId) return;
     
     try {
-      // 1. Delete player's hand and player record completely before updating UI
-      await supabase.from('player_hands').delete().eq('player_id', myPlayerId);
-      await supabase.from('players').delete().eq('id', myPlayerId);
-      
-      // 2. Check remaining players
-      const { count } = await supabase.from('players').select('*', { count: 'exact', head: true }).eq('room_id', room.id);
-      
-      // 3. If no players left, delete the room
-      if (count === 0) {
-        await supabase.from('rooms').delete().eq('id', room.id);
-      } else if (room.status === 'playing' || room.status === 'fight') {
-        await supabase.from('rooms').update({ status: 'finished' }).eq('id', room.id);
+      if (room.status === 'playing' || room.status === 'fight') {
+        // Disconnect but leave bot running
+        const newMelds: RoomMeld[] = [...(room.board_melds || []), { type: 'player_disconnected', playerId: myPlayerId }];
+        await supabase.from('rooms').update({ board_melds: newMelds }).eq('id', room.id);
+      } else {
+        // Normal leave (waiting or finished)
+        await supabase.from('player_hands').delete().eq('player_id', myPlayerId);
+        await supabase.from('players').delete().eq('id', myPlayerId);
+        
+        // Check remaining players
+        const { count } = await supabase.from('players').select('*', { count: 'exact', head: true }).eq('room_id', room.id);
+        
+        // If no players left, delete the room
+        if (count === 0) {
+          await supabase.from('rooms').delete().eq('id', room.id);
+        }
       }
     } catch (e) {
       console.error("Failed to leave room cleanly:", e);
