@@ -1,0 +1,75 @@
+1. The Basics
+Players: Exactly 3 players.
+
+Deck: A standard 52-card Anglo-American deck (Jokers removed).
+
+Objective: To get rid of all the cards in your hand, or to have the lowest total point value of unmatched cards in your hand when the game ends.
+
+2. Card Values and Rankings
+When tallying points at the end of a round, the cards hold the following values:
+
+Ace: 1 point
+
+Cards 2 to 9: Face value (e.g., a 5 is worth 5 points)
+
+10, Jack, Queen, King: 10 points each
+
+3. Valid Melds (Bahay)
+To get rid of cards, you must form them into melds. There are two types of valid melds:
+
+Three or Four of a Kind: Three or four cards of the same rank (e.g., 7♠ - 7♥ - 7♣).
+
+Straight Flush: Three or more cards in sequential order of the exact same suit (e.g., 4♥ - 5♥ - 6♥ - 7♥).
+
+4. Setup and Dealing
+The dealer is chosen randomly for the first game. In subsequent games, the winner of the previous round becomes the dealer.
+
+The dealer deals 13 cards to themselves and 12 cards to the other two players.
+
+The remaining cards are placed face down in the center to form the Stock Pile.
+
+Because the dealer has 13 cards, they take the first turn automatically by discarding one card face up to start the Discard Pile.
+
+5. Taking a Turn
+Play moves counter-clockwise. On your turn, you must complete these actions in order:
+
+Draw or Chow:
+
+Draw: Take the top card from the Stock Pile.
+
+Chow (Pick up): Take the top card from the Discard Pile. You can only do this if you can immediately use that discarded card to form a valid meld with the cards currently in your hand. You must lay that meld down on the table right away.
+
+Drop Melds (Optional): You can place any completed melds from your hand face-up on the table in front of you.
+
+Sapaw / Connect (Optional): You can add cards to any exposed melds already on the table—whether they belong to you or your opponents. For example, if an opponent has dropped 4♥ - 5♥ - 6♥, and you have the 7♥, you can place it on their meld.
+
+Discard: To end your turn, you must discard one card from your hand face up onto the discard pile.
+
+6. How to Win
+There are three ways to win a round of Tongits:
+
+Method 1: Tongits
+If you successfully meld and/or connect all of your cards, and have one final card left to discard, you win by "Tongits." You have successfully emptied your hand.
+
+Method 2: Calling a "Draw" (The Fight)
+If you believe the unmatched cards left in your hand have the lowest point total compared to your opponents, you can call a "Draw" at the very beginning of your turn (before drawing a card).
+
+Conditions to call a Draw: You must have exposed at least one meld on the table, and no opponent can have connected (Sapaw) to any of your melds during the round since your last turn.
+
+The Fight: Once a Draw is called, the other players can either Fold (concede if they know their points are too high) or Fight (challenge the caller).
+
+Whoever has the lowest point total in their hand wins. If there is a tie, the challenger wins over the caller.
+
+Method 3: Deck Exhaustion
+If the Stock Pile runs out of cards and no one has won by Tongits or called a Draw, the game immediately ends.
+
+Players tally the points of the unmatched cards remaining in their hands.
+
+The player with the lowest score wins.
+
+7. Crucial Rules and Penalties
+Burned (Sunog): If the game ends (either by the deck running out or someone calling a Draw) and you have not dropped a single meld on the table, you are "burned." You automatically lose and usually pay a penalty, regardless of how low your points are.
+
+Secret Melds: If you have four-of-a-kind in your hand, you do not have to expose it to be safe from getting burned, but it counts as zero points. However, if an opponent drops three-of-a-kind and you hold the fourth card, you cannot keep it as a secret meld.
+
+Two-Card Drops (Special House Rule): Some local variations allow you to drop two cards of a straight flush if they are both "heads" (e.g., Ace-2 of Spades) to avoid getting burned, but in strict official rules, a meld must be a minimum of three card
