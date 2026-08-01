@@ -7,11 +7,12 @@ const cardImages = import.meta.glob('../assets/PNG-cards-1.3/*.png', { eager: tr
 interface CardViewProps {
   card: CardType;
   selected?: boolean;
+  highlighted?: boolean;
   onClick?: (card: CardType) => void;
   small?: boolean;
 }
 
-export const CardView = ({ card, selected, onClick, small }: CardViewProps) => {
+export const CardView = ({ card, selected, highlighted, onClick, small }: CardViewProps) => {
   const selectedClass = selected ? 'selected' : '';
   const sizeClass = small ? 'small' : '';
 
@@ -33,7 +34,11 @@ export const CardView = ({ card, selected, onClick, small }: CardViewProps) => {
       onClick={() => onClick && onClick(card)}
       style={{
         background: 'transparent',
-        boxShadow: selected ? '0 0 0 3px var(--btn-yellow), -2px 5px 15px rgba(0,0,0,0.6)' : 'none',
+        boxShadow: selected 
+          ? '0 0 0 3px var(--btn-yellow), -2px 5px 15px rgba(0,0,0,0.6)' 
+          : highlighted 
+            ? '0 0 8px 3px rgba(56, 189, 248, 0.8), 0 0 20px 5px rgba(56, 189, 248, 0.4)' 
+            : 'none',
         border: 'none',
         overflow: 'hidden' // ensure the image doesn't bleed out of rounded corners if any
       }}

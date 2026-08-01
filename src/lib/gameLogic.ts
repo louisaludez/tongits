@@ -93,6 +93,34 @@ export const canChow = (discardedCard: Card, hand: Card[]): boolean => {
   return false;
 };
 
+// Get all cards in hand that could participate in any valid chow meld with the discarded card
+export const getChowEligibleCards = (discardedCard: Card, hand: Card[]): Card[] => {
+  const eligibleKeys = new Set<string>();
+
+  const getCombinations = (arr: Card[], min: number): Card[][] => {
+    const result: Card[][] = [];
+    const f = (prefix: Card[], cards: Card[]) => {
+      if (prefix.length >= min) result.push(prefix);
+      for (let i = 0; i < cards.length; i++) {
+        f([...prefix, cards[i]], cards.slice(i + 1));
+      }
+    };
+    f([], arr);
+    return result;
+  };
+
+  const handCombos = getCombinations(hand, 2);
+  for (const combo of handCombos) {
+    if (isValidMeld([discardedCard, ...combo])) {
+      for (const card of combo) {
+        eligibleKeys.add(`${card.rank}-${card.suit}`);
+      }
+    }
+  }
+
+  return hand.filter(c => eligibleKeys.has(`${c.rank}-${c.suit}`));
+};
+
 // Retrieve the actual meld that can be formed from Chow
 export const getValidChowMeld = (discardedCard: Card, hand: Card[]): Card[] | null => {
   const getCombinations = (arr: Card[], min: number): Card[][] => {

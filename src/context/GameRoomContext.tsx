@@ -52,7 +52,7 @@ interface GameRoomContextProps {
   joinRoom: (roomId: string) => Promise<void>;
   startGame: () => Promise<void>;
   drawCard: () => Promise<void>;
-  chowCard: () => Promise<void>;
+  chowCard: (selectedHandCards?: Card[]) => Promise<void>;
   discard: (card: Card) => Promise<void>;
   dropMeld: (cards: Card[]) => Promise<void>;
   sapawMeld: (cards: Card[], targetMeldIndex: number) => Promise<void>;
@@ -664,7 +664,7 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
     await supabase.from('rooms').update({ deck: newDeck, turn_phase: 'action' }).eq('id', room.id);
   };
 
-  const chowCard = async () => {
+  const chowCard = async (selectedHandCards?: Card[]) => {
     if (!room || !myPlayerId || room.current_turn_player_id !== myPlayerId || room.turn_phase !== 'draw' || room.discard_pile.length === 0) return;
     
     // SAFEGUARD: You can never chow if you already have 13 cards
@@ -675,12 +675,22 @@ export const GameRoomProvider = ({ children }: { children: ReactNode }) => {
 
     const topDiscard = room.discard_pile[room.discard_pile.length - 1];
     
-    const meld = getValidChowMeld(topDiscard, hand);
-    if (!meld) return; // Should not happen since we check canChow in UI
+    let meld: Card[];
+    if (selectedHandCards && selectedHandCards.length >= 2) {
+      // Use player-selected cards
+      const candidateMeld = [topDiscard, ...selectedHandCards];
+      if (!isValidMeld(candidateMeld)) return;
+      meld = candidateMeld;
+    } else {
+      // Auto-pick best meld
+      const autoMeld = getValidChowMeld(topDiscard, hand);
+      if (!autoMeld) return;
+      meld = autoMeld;
+    }
     
     const newDiscard = room.discard_pile.slice(0, -1);
     
-    // Remove the meld cards from hand
+    // Remove the meld cards from hand (excluding the discard card)
     const handCardsToRemove = meld.filter(c => !(c.suit === topDiscard.suit && c.rank === topDiscard.rank));
     let newHand = [...hand];
     for (const c of handCardsToRemove) {

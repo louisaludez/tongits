@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useGameRoom } from '../context/GameRoomContext';
 import { CardView } from './CardView';
-import { canChow, canSapaw, calculateHandScore, extractMelds } from '../lib/gameLogic';
+import { canChow, canSapaw, calculateHandScore, extractMelds, isValidMeld, getChowEligibleCards } from '../lib/gameLogic';
 import type { Card } from '../lib/gameLogic';
 import { supabase } from '../lib/supabase';
 import { playSound } from '../lib/sound';
@@ -9,6 +9,7 @@ import { playSound } from '../lib/sound';
 export const GameBoard = () => {
   const { room, players, hand, myPlayerId, drawCard, chowCard, discard, dropMeld, sapawMeld, callDraw, respondToFight, leaveRoom, restartGame, playerNames, playerAvatars, myAvatarUrl, chatMessages, sendChatMessage } = useGameRoom();
   const [selectedCards, setSelectedCards] = useState<Card[]>([]);
+  const [customGroups, setCustomGroups] = useState<Card[][]>([]);
   const [finalScores, setFinalScores] = useState<any[] | null>(null);
   const [showDiscardsModal, setShowDiscardsModal] = useState(false);
   const [chatInput, setChatInput] = useState('');
@@ -37,7 +38,8 @@ export const GameBoard = () => {
   useEffect(() => {
     if (room?.status === 'finished') {
       const fetchScores = async () => {
-        const { data: hands } = await supabase.from('player_hands').select('*');
+        const playerIds = players.map(p => p.id);
+        const { data: hands } = await supabase.from('player_hands').select('*').in('player_id', playerIds);
         if (hands) {
           const scores = players.map(p => {
             const h = hands.find((handRow: any) => handRow.player_id === p.id);
@@ -85,11 +87,40 @@ export const GameBoard = () => {
     
   const opponents = players.filter(p => p.id !== myPlayerId && !ghostPlayerIds.includes(p.id));
 
-  const { melds, unmatched } = useMemo(() => extractMelds(hand), [hand]);
+  // Full hand analysis for scoring and burned check
+  const { melds: allMelds, unmatched: allUnmatched } = useMemo(() => extractMelds(hand), [hand]);
+
+  // Sync custom groups with current hand (remove cards no longer in hand)
+  const activeCustomGroups = useMemo(() => {
+    return customGroups
+      .map(group => group.filter(gc => hand.some(hc => hc.suit === gc.suit && hc.rank === gc.rank)))
+      .filter(group => group.length >= 2);
+  }, [customGroups, hand]);
+
+  // Set of card keys that are in custom groups
+  const customGroupedKeys = useMemo(() => {
+    return new Set(activeCustomGroups.flat().map(c => `${c.rank}-${c.suit}`));
+  }, [activeCustomGroups]);
+
+  // Auto-detected melds excluding cards already in custom groups
+  const displayMelds = useMemo(() => {
+    return allMelds
+      .map(meld => meld.filter(c => !customGroupedKeys.has(`${c.rank}-${c.suit}`)))
+      .filter(meld => meld.length > 0);
+  }, [allMelds, customGroupedKeys]);
+
+  // Unmatched cards excluding cards in custom groups
+  const displayUnmatched = useMemo(() => {
+    return allUnmatched.filter(c => !customGroupedKeys.has(`${c.rank}-${c.suit}`));
+  }, [allUnmatched, customGroupedKeys]);
 
   const handleAutoSort = async () => {
     playSound.click();
-    const { melds: newMelds, unmatched: newUnmatched } = extractMelds(hand);
+    // Exclude custom-grouped cards from sorting
+    const groupedKeys = new Set(activeCustomGroups.flat().map(c => `${c.rank}-${c.suit}`));
+    const nonGroupedCards = hand.filter(c => !groupedKeys.has(`${c.rank}-${c.suit}`));
+    
+    const { melds: newMelds, unmatched: newUnmatched } = extractMelds(nonGroupedCards);
     
     const suitOrder = { spades: 1, hearts: 2, clubs: 3, diamonds: 4 } as any;
     const rankValue = { 'A': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, '10': 10, 'J': 11, 'Q': 12, 'K': 13 } as any;
@@ -101,20 +132,95 @@ export const GameBoard = () => {
       return suitOrder[a.suit] - suitOrder[b.suit];
     });
 
-    const flattened = [...newMelds.flat(), ...sortedUnmatched];
+    // Custom grouped cards first, then sorted non-grouped cards
+    const groupedCards = activeCustomGroups.flat();
+    const flattened = [...groupedCards, ...newMelds.flat(), ...sortedUnmatched];
     // Update DB to persist sort
     await supabase.from('player_hands').update({ hand: flattened }).eq('player_id', myPlayerId);
   };
+
+  const handleGroupCards = () => {
+    if (selectedCards.length < 2) return;
+    playSound.click();
+    // Remove selected cards from any existing custom groups
+    const cleanedGroups = customGroups
+      .map(group => group.filter(gc => !selectedCards.find(s => s.suit === gc.suit && s.rank === gc.rank)))
+      .filter(group => group.length >= 2);
+    // Add new group
+    setCustomGroups([...cleanedGroups, [...selectedCards]]);
+    setSelectedCards([]);
+  };
+
+  const handleUngroupCards = () => {
+    playSound.click();
+    // Find which group contains the first selected card and remove it
+    const firstCard = selectedCards[0];
+    const groupIndex = customGroups.findIndex(group =>
+      group.some(gc => gc.suit === firstCard.suit && gc.rank === firstCard.rank)
+    );
+    if (groupIndex !== -1) {
+      const newGroups = [...customGroups];
+      newGroups.splice(groupIndex, 1);
+      setCustomGroups(newGroups);
+    }
+    setSelectedCards([]);
+  };
+
+  // Check if the current selection exactly matches a custom group
+  const isSelectionAGroup = selectedCards.length >= 2 && activeCustomGroups.some(group =>
+    group.length === selectedCards.length &&
+    group.every(gc => selectedCards.find(s => s.suit === gc.suit && s.rank === gc.rank))
+  );
 
 
 
   const toggleSelectCard = (card: Card) => {
     playSound.click();
-    const isSelected = selectedCards.find(c => c.suit === card.suit && c.rank === card.rank);
-    if (isSelected) {
-      setSelectedCards(selectedCards.filter(c => !(c.suit === card.suit && c.rank === card.rank)));
+
+    // During draw phase with chow available: individual selection of eligible cards only
+    if (isMyTurn && room?.turn_phase === 'draw' && showChow) {
+      if (!chowEligibleKeys.has(`${card.rank}-${card.suit}`)) return; // Ignore non-eligible cards
+      const isSelected = selectedCards.find(c => c.suit === card.suit && c.rank === card.rank);
+      if (isSelected) {
+        setSelectedCards(selectedCards.filter(c => !(c.suit === card.suit && c.rank === card.rank)));
+      } else {
+        setSelectedCards([...selectedCards, card]);
+      }
+      return;
+    }
+    
+    // Check if the card belongs to a custom group
+    const parentGroup = activeCustomGroups.find(group => 
+      group.some(gc => gc.suit === card.suit && gc.rank === card.rank)
+    );
+
+    // Check if the card belongs to an auto-detected meld (balay)
+    const parentMeld = !parentGroup ? displayMelds.find(meld =>
+      meld.some(mc => mc.suit === card.suit && mc.rank === card.rank)
+    ) : null;
+
+    const groupToToggle = parentGroup || parentMeld;
+    
+    if (groupToToggle) {
+      // If any card in the group/meld is already selected, deselect all of them
+      const isGroupSelected = groupToToggle.some(gc => 
+        selectedCards.find(c => c.suit === gc.suit && c.rank === gc.rank)
+      );
+      if (isGroupSelected) {
+        setSelectedCards(selectedCards.filter(c => 
+          !groupToToggle.find(gc => gc.suit === c.suit && gc.rank === c.rank)
+        ));
+      } else {
+        setSelectedCards([...selectedCards, ...groupToToggle]);
+      }
     } else {
-      setSelectedCards([...selectedCards, card]);
+      // Normal single card toggle (unmatched cards)
+      const isSelected = selectedCards.find(c => c.suit === card.suit && c.rank === card.rank);
+      if (isSelected) {
+        setSelectedCards(selectedCards.filter(c => !(c.suit === card.suit && c.rank === card.rank)));
+      } else {
+        setSelectedCards([...selectedCards, card]);
+      }
     }
   };
 
@@ -149,7 +255,23 @@ export const GameBoard = () => {
     }
   };
 
-  const showChow = isMyTurn && room.turn_phase === 'draw' && room.discard_pile.length > 0 && canChow(room.discard_pile[room.discard_pile.length - 1], hand);
+  const showChow = isMyTurn && room.turn_phase === 'draw' && room.discard_pile.length > 0 && canChow(room.discard_pile[room.discard_pile.length - 1], hand.filter(c => !customGroupedKeys.has(`${c.rank}-${c.suit}`)));
+
+  const topDiscard = room.discard_pile.length > 0 ? room.discard_pile[room.discard_pile.length - 1] : null;
+
+  // Chow-eligible cards (excluding grouped cards)
+  const chowEligibleCards = useMemo(() => {
+    if (!showChow || !topDiscard) return [];
+    const nonGroupedHand = hand.filter(c => !customGroupedKeys.has(`${c.rank}-${c.suit}`));
+    return getChowEligibleCards(topDiscard, nonGroupedHand);
+  }, [showChow, topDiscard, hand, customGroupedKeys]);
+
+  const chowEligibleKeys = useMemo(() => {
+    return new Set(chowEligibleCards.map(c => `${c.rank}-${c.suit}`));
+  }, [chowEligibleCards]);
+
+  // Check if selected cards + discard form a valid chow meld
+  const canConfirmChow = showChow && selectedCards.length >= 2 && topDiscard && isValidMeld([topDiscard, ...selectedCards]);
 
   const fightCaller = room.board_melds.find(m => m.type === 'fight_caller');
   const fightCallerPlayer = players.find(p => p.id === fightCaller?.playerId);
@@ -158,7 +280,7 @@ export const GameBoard = () => {
 
   // Check if player is Burned (Sunog)
   const hasDroppedMeld = room.board_melds.some(m => m.playerId === myPlayerId && (!m.type || m.type === 'meld'));
-  const hasSecret4 = melds.some(m => m.length === 4 && m[0].rank === m[1].rank && m[1].rank === m[2].rank);
+  const hasSecret4 = allMelds.some(m => m.length === 4 && m[0].rank === m[1].rank && m[1].rank === m[2].rank);
   const isBurned = !hasDroppedMeld && !hasSecret4;
 
   return (
@@ -253,8 +375,16 @@ export const GameBoard = () => {
 
             <div className="pile-container" onClick={() => { 
               if (showChow && !isFightActive) {
-                playSound.cardDraw();
-                chowCard(); 
+                if (canConfirmChow) {
+                  // Chow with player's selected cards
+                  playSound.cardDraw();
+                  chowCard(selectedCards);
+                  setSelectedCards([]);
+                } else if (selectedCards.length === 0) {
+                  // Auto-chow if no cards selected
+                  playSound.cardDraw();
+                  chowCard(); 
+                }
               }
             }}>
               {room.discard_pile.length > 0 ? (
@@ -323,6 +453,15 @@ export const GameBoard = () => {
                   <button className="mobile-btn btn-blue" onClick={() => { playSound.cardDraw(); drawCard(); }}>
                     Draw
                   </button>
+                  {canConfirmChow && (
+                    <button className="mobile-btn btn-green" onClick={() => {
+                      playSound.cardDraw();
+                      chowCard(selectedCards);
+                      setSelectedCards([]);
+                    }}>
+                      Chow
+                    </button>
+                  )}
                 </>
               )}
               {room.turn_phase === 'action' && (
@@ -336,6 +475,17 @@ export const GameBoard = () => {
                   <button className="mobile-btn btn-green" onClick={() => { playSound.click(); handleAutoSort(); }}>
                     Sort
                   </button>
+                  {selectedCards.length >= 2 && (
+                    isSelectionAGroup ? (
+                      <button className="mobile-btn btn-orange" onClick={handleUngroupCards}>
+                        Ungroup
+                      </button>
+                    ) : (
+                      <button className="mobile-btn btn-orange" onClick={handleGroupCards}>
+                        Group
+                      </button>
+                    )
+                  )}
                   <button className="mobile-btn btn-purple" onClick={handleDiscard} disabled={selectedCards.length !== 1}>
                     Dump
                   </button>
@@ -387,14 +537,30 @@ export const GameBoard = () => {
             <div className="op-coins">🪙 100,000</div>
           </div>
 
-          {/* Render grouped valid melds */}
-          {melds.map((meldGroup, index) => (
+          {/* Render user custom groups */}
+          {activeCustomGroups.map((group, index) => (
+            <div key={`custom-group-${index}`} className="hand-group" style={{ borderBottom: '3px solid #f97316', borderRadius: '0 0 8px 8px', paddingBottom: '4px' }}>
+              {group.map((card, idx) => (
+                <CardView 
+                  key={`cg-${card.rank}-${card.suit}-${idx}`} 
+                  card={card} 
+                  selected={!!selectedCards.find(c => c.suit === card.suit && c.rank === card.rank)}
+                  highlighted={chowEligibleKeys.has(`${card.rank}-${card.suit}`)}
+                  onClick={toggleSelectCard}
+                />
+              ))}
+            </div>
+          ))}
+
+          {/* Render auto-detected melds (excluding custom grouped cards) */}
+          {displayMelds.map((meldGroup, index) => (
             <div key={`meld-group-${index}`} className="hand-group">
               {meldGroup.map((card, idx) => (
                 <CardView 
                   key={`meld-${card.rank}-${card.suit}-${idx}`} 
                   card={card} 
                   selected={!!selectedCards.find(c => c.suit === card.suit && c.rank === card.rank)}
+                  highlighted={chowEligibleKeys.has(`${card.rank}-${card.suit}`)}
                   onClick={toggleSelectCard}
                 />
               ))}
@@ -402,20 +568,23 @@ export const GameBoard = () => {
           ))}
 
           {/* Render remaining unmatched cards */}
-          <div className="hand-group">
-            {unmatched.map((card, idx) => (
-              <CardView 
-                key={`unmatch-${card.rank}-${card.suit}-${idx}`} 
-                card={card} 
-                selected={!!selectedCards.find(c => c.suit === card.suit && c.rank === card.rank)}
-                onClick={toggleSelectCard}
-              />
-            ))}
-          </div>
+          {displayUnmatched.length > 0 && (
+            <div className="hand-group">
+              {displayUnmatched.map((card, idx) => (
+                <CardView 
+                  key={`unmatch-${card.rank}-${card.suit}-${idx}`} 
+                  card={card} 
+                  selected={!!selectedCards.find(c => c.suit === card.suit && c.rank === card.rank)}
+                  highlighted={chowEligibleKeys.has(`${card.rank}-${card.suit}`)}
+                  onClick={toggleSelectCard}
+                />
+              ))}
+            </div>
+          )}
           
           <div className="points-badge">
             <span>Point</span>
-            <strong>{calculateHandScore(unmatched)}</strong>
+            <strong>{calculateHandScore(allUnmatched)}</strong>
           </div>
 
         </div>
